@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Blackout for YouTube",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Hide or blackout videos, Shorts, and community posts from channels you do not want to see.",
   "permissions": [
     "storage"
