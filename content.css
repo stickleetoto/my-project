@@ -1,0 +1,10 @@
+.bfy-card { position: relative !important; }
+.bfy-block-button { position:absolute!important;top:8px!important;right:8px!important;z-index:2147483646!important;border:0!important;border-radius:999px!important;padding:6px 9px!important;background:rgba(0,0,0,.82)!important;color:#fff!important;font:600 12px/1.2 Arial,sans-serif!important;cursor:pointer!important;box-shadow:0 1px 4px rgba(0,0,0,.35)!important }
+.bfy-block-button:hover { background:#000!important }
+.bfy-censored { position:relative!important;overflow:hidden!important }
+.bfy-censored > * { visibility:hidden!important }
+.bfy-censored::after { content:attr(data-bfy-label);position:absolute!important;inset:0!important;display:flex!important;align-items:center!important;justify-content:center!important;z-index:2147483645!important;background:#000!important;color:#aaa!important;font:600 13px/1.4 Arial,sans-serif!important;letter-spacing:.03em!important;text-align:center!important;padding:16px!important;box-sizing:border-box!important }
+.bfy-censored.bfy-blur > * { visibility:visible!important;filter:blur(28px) grayscale(1) brightness(.35)!important;pointer-events:none!important }
+.bfy-censored.bfy-blur::after { background:rgba(0,0,0,.28)!important;color:#fff!important }
+.bfy-censored.bfy-image::after { background-color:#000!important;background-image:var(--bfy-custom-image)!important;background-repeat:no-repeat!important;background-position:center!important;background-size:cover!important;color:transparent!important }
+.bfy-hidden { display:none!important }
