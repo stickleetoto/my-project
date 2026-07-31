@@ -1,32 +1,9 @@
 (() => {
-  const DEFAULTS = {
-    enabled: true,
-    mode: 'blackout',
-    blockedChannels: [],
-    customImage: ''
-  };
-
+  const DEFAULTS = { enabled: true, mode: 'blackout', blockedChannels: [], customImage: '' };
   let settings = { ...DEFAULTS };
-  let scheduled = false;
+  let scanQueued = false;
 
-  const CARD_SELECTORS = [
-    'ytd-rich-item-renderer',
-    'ytd-rich-grid-media',
-    'ytd-rich-grid-slim-media',
-    'yt-lockup-view-model',
-    'yt-lockup-metadata-view-model',
-    'ytd-video-renderer',
-    'ytd-grid-video-renderer',
-    'ytd-compact-video-renderer',
-    'ytd-playlist-video-renderer',
-    'ytd-reel-item-renderer',
-    'ytm-shorts-lockup-view-model',
-    'ytd-post-renderer',
-    'ytd-backstage-post-thread-renderer',
-    'ytd-backstage-post-renderer'
-  ];
-
-  const OUTER_CARD_SELECTOR = [
+  const CARD_SELECTOR = [
     'ytd-rich-item-renderer',
     'ytd-rich-grid-media',
     'ytd-rich-grid-slim-media',
@@ -42,15 +19,16 @@
     'ytd-backstage-post-renderer'
   ].join(',');
 
+  const CHANNEL_PREFIXES = ['channel', 'c', 'user'];
+
   function normalizeKey(value) {
     if (!value) return '';
     try {
       const url = new URL(value, location.origin);
       const parts = url.pathname.split('/').filter(Boolean);
       if (!parts.length) return '';
-
       if (parts[0].startsWith('@')) return `/${parts[0]}`.toLowerCase();
-      if (['channel', 'c', 'user'].includes(parts[0]) && parts[1]) {
+      if (CHANNEL_PREFIXES.includes(parts[0]) && parts[1]) {
         return `/${parts[0]}/${parts[1]}`.toLowerCase();
       }
       return '';
@@ -60,88 +38,70 @@
   }
 
   function normalizeLabel(value) {
-    return String(value || '')
-      .replace(/\s+/g, ' ')
-      .trim()
-      .toLocaleLowerCase();
+    return String(value || '').replace(/\s+/g, ' ').trim().toLocaleLowerCase();
   }
 
-  function labelFor(card) {
-    const tag = card.tagName.toLowerCase();
-    return tag.includes('post') || card.querySelector('ytd-backstage-post-renderer')
-      ? '차단된 채널의 게시물'
-      : (tag.includes('reel') || tag.includes('shorts'))
-        ? '차단된 채널의 Shorts'
-        : '차단된 채널의 콘텐츠';
+  function getChannelPageKey() {
+    return /^\/(?:@|channel\/|c\/|user\/)/i.test(location.pathname)
+      ? normalizeKey(location.href)
+      : '';
+  }
+
+  function getChannelPageLabel() {
+    const selectors = [
+      'yt-page-header-renderer h1',
+      'ytd-c4-tabbed-header-renderer #channel-name',
+      '#channel-header-container #channel-name',
+      'meta[property="og:title"]'
+    ];
+    for (const selector of selectors) {
+      const el = document.querySelector(selector);
+      const text = el?.content || el?.textContent;
+      if (text?.trim()) return text.replace(/\s+/g, ' ').trim();
+    }
+    return '';
   }
 
   function channelLinksIn(root) {
     if (!root?.querySelectorAll) return [];
     return [...root.querySelectorAll('[href]')]
-      .map(el => {
-        const raw = el.href || el.getAttribute('href');
-        return { el, key: normalizeKey(raw) };
-      })
-      .filter(item => item.key);
+      .map(el => ({ el, key: normalizeKey(el.href || el.getAttribute('href')) }))
+      .filter(x => x.key);
   }
 
-  function keyFromSerializedCard(card) {
-    const html = card?.innerHTML || '';
-    if (!html) return '';
-
-    const patterns = [
-      /(?:https?:\\?\/\\?\/www\.youtube\.com)?\\?(\/@[A-Za-z0-9._-]+)/i,
-      /\\?(\/channel\/[A-Za-z0-9_-]+)/i,
-      /\\?(\/c\/[A-Za-z0-9._-]+)/i,
-      /\\?(\/user\/[A-Za-z0-9._-]+)/i
-    ];
-
-    for (const pattern of patterns) {
-      const match = html.match(pattern);
-      if (match?.[1]) return normalizeKey(match[1].replace(/\\\//g, '/'));
-    }
-    return '';
-  }
-
-  function findChannelKey(card) {
-    if (!card) return '';
-    if (card.dataset?.bfyChannelKey) return normalizeKey(card.dataset.bfyChannelKey);
+  function findExplicitChannelKey(card) {
+    if (!card?.querySelectorAll) return '';
+    const cached = normalizeKey(card.dataset?.bfyChannelKey || '');
+    if (cached) return cached;
 
     const links = channelLinksIn(card);
-    if (links.length) {
-      const preferred = links.find(({ el }) => {
-        const hint = [
-          el.id,
-          typeof el.className === 'string' ? el.className : '',
-          el.getAttribute?.('aria-label'),
-          el.closest?.('ytd-channel-name')?.id,
-          el.closest?.('#channel-name')?.id,
-          el.closest?.('[class*="channel"]')?.className,
-          el.closest?.('[id*="channel"]')?.id,
-          el.closest?.('[class*="author"]')?.className,
-          el.closest?.('[id*="author"]')?.id,
-          el.closest?.('[class*="byline"]')?.className,
-          el.closest?.('[id*="byline"]')?.id,
-          el.closest?.('[class*="metadata"]')?.className
-        ].filter(Boolean).join(' ');
-        return /channel|author|byline|owner|avatar|metadata/i.test(hint);
-      });
+    if (!links.length) return '';
 
-      const key = (preferred || links[0]).key;
-      if (key) {
-        card.dataset.bfyChannelKey = key;
-        return key;
-      }
-    }
+    const preferred = links.find(({ el }) => {
+      const hint = [
+        el.id,
+        typeof el.className === 'string' ? el.className : '',
+        el.getAttribute?.('aria-label'),
+        el.closest?.('ytd-channel-name')?.id,
+        el.closest?.('[id*="channel"]')?.id,
+        el.closest?.('[class*="channel"]')?.className,
+        el.closest?.('[id*="author"]')?.id,
+        el.closest?.('[class*="author"]')?.className,
+        el.closest?.('[id*="byline"]')?.id,
+        el.closest?.('[class*="byline"]')?.className
+      ].filter(Boolean).join(' ');
+      return /channel|author|byline|owner|avatar/i.test(hint);
+    });
 
-    const serializedKey = keyFromSerializedCard(card);
-    if (serializedKey) card.dataset.bfyChannelKey = serializedKey;
-    return serializedKey;
+    const key = (preferred || links[0])?.key || '';
+    if (key) card.dataset.bfyChannelKey = key;
+    return key;
   }
 
   function channelLabelFromCard(card) {
     if (!card?.querySelector) return '';
-    if (card.dataset?.bfyChannelLabel) return card.dataset.bfyChannelLabel;
+    const cached = card.dataset?.bfyChannelLabel;
+    if (cached) return cached;
 
     const selectors = [
       'ytd-channel-name #text',
@@ -149,13 +109,10 @@
       '#channel-name a',
       '#byline-container a',
       '#byline a',
-      '.ytd-channel-name',
       '.yt-content-metadata-view-model__metadata-row:first-child a',
-      '.yt-content-metadata-view-model__metadata-text:first-child',
       '[class*="channel-name"]',
       '[class*="byline"] a'
     ];
-
     for (const selector of selectors) {
       const el = card.querySelector(selector);
       const text = el?.textContent?.replace(/\s+/g, ' ').trim();
@@ -167,39 +124,14 @@
     return '';
   }
 
-  function getChannelPageKey() {
-    const path = location.pathname;
-    if (!/^\/(?:@|channel\/|c\/|user\/)/i.test(path)) return '';
-    return normalizeKey(location.href);
-  }
-
-  function getChannelPageLabel() {
-    const selectors = [
-      'yt-page-header-renderer h1',
-      'yt-page-header-renderer #page-header span',
-      'ytd-c4-tabbed-header-renderer #channel-name',
-      '#channel-header-container #channel-name',
-      'meta[property="og:title"]'
-    ];
-
-    for (const selector of selectors) {
-      const el = document.querySelector(selector);
-      const text = el?.content || el?.textContent;
-      if (text?.trim()) return text.replace(/\s+/g, ' ').trim();
-    }
-    return '';
-  }
-
   function blockedEntryFor(key, label = '') {
-    const normalizedKey = normalizeKey(key);
-    const normalizedLabel = normalizeLabel(label);
-
+    const k = normalizeKey(key);
+    const l = normalizeLabel(label);
     return settings.blockedChannels.find(item => {
       const itemKey = normalizeKey(item.key || item);
-      if (normalizedKey && itemKey === normalizedKey) return true;
-
+      if (k && itemKey === k) return true;
       const itemLabel = normalizeLabel(item.label || '');
-      return !normalizedKey && normalizedLabel && itemLabel && itemLabel === normalizedLabel;
+      return !k && l && itemLabel && itemLabel === l;
     }) || null;
   }
 
@@ -208,39 +140,27 @@
   }
 
   async function setBlocked(key, blocked, label = '') {
-    if (!key) return;
-    const normalizedKey = normalizeKey(key);
-    const existing = settings.blockedChannels.filter(x => normalizeKey(x.key || x) !== normalizedKey);
-    if (blocked) {
-      existing.push({
-        key: normalizedKey,
-        label: label || undefined,
-        addedAt: new Date().toISOString()
-      });
-    }
-    settings.blockedChannels = existing;
-    await chrome.storage.local.set({ blockedChannels: existing });
+    const k = normalizeKey(key);
+    if (!k) return;
+    const next = settings.blockedChannels.filter(item => normalizeKey(item.key || item) !== k);
+    if (blocked) next.push({ key: k, label: label || undefined, addedAt: new Date().toISOString() });
+    settings.blockedChannels = next;
+    await chrome.storage.local.set({ blockedChannels: next });
   }
 
-  function applyMode(card) {
-    card.classList.remove('bfy-hidden', 'bfy-censored', 'bfy-blur', 'bfy-image');
-    card.style.removeProperty('--bfy-custom-image');
+  function isContentCard(card) {
+    if (!card?.querySelector) return false;
+    if (/post|backstage/i.test(card.tagName)) return true;
+    return !!card.querySelector(
+      'a[href*="/watch?"], a[href^="/shorts/"], a[href*="youtube.com/watch?"], a[href*="youtube.com/shorts/"]'
+    );
+  }
 
-    if (settings.mode === 'hide') {
-      card.classList.add('bfy-hidden');
-      return;
-    }
-
-    card.classList.add('bfy-censored');
-    card.dataset.bfyLabel = labelFor(card);
-
-    if (settings.mode === 'blur') {
-      card.classList.add('bfy-blur');
-    } else if (settings.mode === 'image' && settings.customImage) {
-      card.classList.add('bfy-image');
-      const safe = settings.customImage.replace(/"/g, '%22');
-      card.style.setProperty('--bfy-custom-image', `url("${safe}")`);
-    }
+  function labelFor(card) {
+    const tag = card.tagName.toLowerCase();
+    if (/post|backstage/.test(tag)) return '차단된 채널의 게시물';
+    if (/reel|shorts/.test(tag)) return '차단된 채널의 Shorts';
+    return '차단된 채널의 콘텐츠';
   }
 
   function restore(card) {
@@ -249,59 +169,60 @@
     delete card.dataset.bfyLabel;
   }
 
-  function videoUrlFromCard(card) {
-    const selectors = [
-      'a[href*="/watch?"]',
-      'a[href^="/shorts/"]',
-      'a[href*="youtube.com/watch?"]',
-      'a[href*="youtube.com/shorts/"]'
-    ];
-    for (const selector of selectors) {
-      const el = card.querySelector(selector);
-      const raw = el?.href || el?.getAttribute?.('href');
-      if (raw) return new URL(raw, location.origin).href;
+  function applyMode(card) {
+    restore(card);
+    if (settings.mode === 'hide') {
+      card.classList.add('bfy-hidden');
+      return;
     }
-    return '';
+    card.classList.add('bfy-censored');
+    card.dataset.bfyLabel = labelFor(card);
+    if (settings.mode === 'blur') card.classList.add('bfy-blur');
+    if (settings.mode === 'image' && settings.customImage) {
+      card.classList.add('bfy-image');
+      const safe = settings.customImage.replace(/"/g, '%22');
+      card.style.setProperty('--bfy-custom-image', `url("${safe}")`);
+    }
   }
 
-  function extractKeyFromWatchHtml(html) {
-    if (!html) return '';
-    const decoded = html
-      .replace(/\\u0026/g, '&')
-      .replace(/\\\//g, '/');
+  function videoUrlFromCard(card) {
+    const el = card.querySelector(
+      'a[href*="/watch?"], a[href^="/shorts/"], a[href*="youtube.com/watch?"], a[href*="youtube.com/shorts/"]'
+    );
+    const raw = el?.href || el?.getAttribute?.('href');
+    return raw ? new URL(raw, location.origin).href : '';
+  }
 
-    const ownerProfile = decoded.match(/"ownerProfileUrl"\s*:\s*"([^"]+)"/i)?.[1];
-    if (ownerProfile) {
-      const key = normalizeKey(ownerProfile);
+  function extractChannelFromWatchHtml(html) {
+    if (!html) return '';
+    const decoded = html.replace(/\\u0026/g, '&').replace(/\\\//g, '/');
+    const owner = decoded.match(/"ownerProfileUrl"\s*:\s*"([^"]+)"/i)?.[1];
+    if (owner) {
+      const key = normalizeKey(owner);
       if (key) return key;
     }
-
     const canonical = decoded.match(/"canonicalBaseUrl"\s*:\s*"(\/@[^"]+|\/channel\/[^"]+)"/i)?.[1];
     if (canonical) {
       const key = normalizeKey(canonical);
       if (key) return key;
     }
-
     const channelId = decoded.match(/"channelId"\s*:\s*"(UC[A-Za-z0-9_-]+)"/i)?.[1];
     return channelId ? normalizeKey(`/channel/${channelId}`) : '';
   }
 
   async function resolveChannelKey(card) {
-    const direct = findChannelKey(card);
+    const direct = findExplicitChannelKey(card);
     if (direct) return direct;
 
-    const videoUrl = videoUrlFromCard(card);
-    if (!videoUrl) return '';
+    const pageKey = getChannelPageKey();
+    if (pageKey) return pageKey;
 
+    const url = videoUrlFromCard(card);
+    if (!url) return '';
     try {
-      const response = await fetch(videoUrl, {
-        method: 'GET',
-        credentials: 'same-origin',
-        cache: 'force-cache'
-      });
+      const response = await fetch(url, { credentials: 'same-origin', cache: 'force-cache' });
       if (!response.ok) return '';
-      const html = await response.text();
-      const key = extractKeyFromWatchHtml(html);
+      const key = extractChannelFromWatchHtml(await response.text());
       if (key) card.dataset.bfyChannelKey = key;
       return key;
     } catch {
@@ -309,47 +230,38 @@
     }
   }
 
-  function isContentCard(card) {
-    if (!card?.querySelector) return false;
-    if (/post|backstage/i.test(card.tagName)) return true;
-    return !!card.querySelector('a[href*="/watch?"],a[href^="/shorts/"],a[href*="youtube.com/watch?"],a[href*="youtube.com/shorts/"]');
-  }
-
-  function addBlockButton(card, knownKey = '') {
+  function makeCardButton(card, knownKey = '') {
+    if (getChannelPageKey()) return;
     if (!isContentCard(card) || card.querySelector(':scope > .bfy-block-button')) return;
-    card.classList.add('bfy-card');
 
+    card.classList.add('bfy-card');
     const btn = document.createElement('button');
     btn.className = 'bfy-block-button';
     btn.type = 'button';
     btn.textContent = '차단';
     btn.title = '이 채널을 Blackout 목록에 추가';
-    if (knownKey) btn.dataset.bfyKey = knownKey;
 
-    btn.addEventListener('click', async (e) => {
+    btn.addEventListener('click', async e => {
       e.preventDefault();
       e.stopPropagation();
       e.stopImmediatePropagation();
-
-      if (btn.dataset.bfyBusy === 'true') return;
-      btn.dataset.bfyBusy = 'true';
-      btn.textContent = '확인 중';
+      if (btn.dataset.busy === '1') return;
+      btn.dataset.busy = '1';
       btn.disabled = true;
+      btn.textContent = '확인 중';
 
       const key = knownKey || await resolveChannelKey(card);
       const label = channelLabelFromCard(card);
-
       if (!key) {
-        btn.textContent = '재시도';
-        btn.title = '채널 정보를 찾지 못했습니다. 다시 눌러주세요.';
+        btn.dataset.busy = '0';
         btn.disabled = false;
-        btn.dataset.bfyBusy = 'false';
+        btn.textContent = '재시도';
+        btn.title = '채널 정보를 찾지 못했습니다.';
         return;
       }
 
       await setBlocked(key, true, label);
       card.dataset.bfyChannelKey = key;
-      if (label) card.dataset.bfyChannelLabel = label;
       btn.remove();
       applyMode(card);
       queueScan();
@@ -358,55 +270,37 @@
     card.appendChild(btn);
   }
 
-  function canonicalCard(card) {
-    if (!(card instanceof Element)) return card;
-    const outer = card.parentElement?.closest(OUTER_CARD_SELECTOR);
-    return outer || card;
-  }
-
-  function processCard(rawCard) {
-    if (!(rawCard instanceof HTMLElement)) return;
-    const card = canonicalCard(rawCard);
+  function processCard(card) {
     if (!(card instanceof HTMLElement) || !isContentCard(card)) return;
 
-    const key = findChannelKey(card);
+    const pageKey = getChannelPageKey();
+    const explicitKey = findExplicitChannelKey(card);
     const label = channelLabelFromCard(card);
 
-    if (settings.enabled && isBlocked(key, label)) {
+    if (pageKey) {
+      card.querySelector(':scope > .bfy-block-button')?.remove();
+      const key = explicitKey || pageKey;
+      const pageBlocked = isBlocked(pageKey, getChannelPageLabel());
+      const cardBlocked = isBlocked(key, label);
+
+      if (settings.enabled && (cardBlocked || (!explicitKey && pageBlocked))) applyMode(card);
+      else restore(card);
+      return;
+    }
+
+    if (settings.enabled && isBlocked(explicitKey, label)) {
       card.querySelector(':scope > .bfy-block-button')?.remove();
       applyMode(card);
     } else {
       restore(card);
-      addBlockButton(card, key);
-    }
-  }
-
-  function processChannelLinkFallbacks(root = document) {
-    const links = channelLinksIn(root);
-    for (const { el } of links) {
-      const card = el.closest?.(OUTER_CARD_SELECTOR);
-      if (card) processCard(card);
-    }
-  }
-
-  function processHomeCards(root = document) {
-    const selectors = [
-      'ytd-browse[page-subtype="home"] ytd-rich-item-renderer',
-      'ytd-browse[page-subtype="home"] ytd-rich-grid-media',
-      'ytd-browse[page-subtype="home"] yt-lockup-view-model',
-      'ytd-rich-grid-renderer ytd-rich-item-renderer',
-      'ytd-rich-grid-renderer ytd-rich-grid-media',
-      'ytd-rich-grid-renderer yt-lockup-view-model'
-    ];
-
-    for (const selector of selectors) {
-      root.querySelectorAll?.(selector).forEach(processCard);
+      makeCardButton(card, explicitKey);
     }
   }
 
   function findChannelHeaderTarget() {
     const selectors = [
       'yt-page-header-renderer #actions',
+      'yt-page-header-renderer #buttons',
       'yt-page-header-renderer yt-flexible-actions-view-model',
       'ytd-c4-tabbed-header-renderer #buttons',
       '#channel-header-container #buttons',
@@ -416,71 +310,65 @@
   }
 
   function updateChannelPageButton() {
-    const key = getChannelPageKey();
-    const existing = document.querySelector('.bfy-channel-block-button');
+    const pageKey = getChannelPageKey();
+    let btn = document.querySelector('.bfy-channel-block-button');
 
-    if (!key) {
-      existing?.remove();
+    if (!pageKey) {
+      btn?.remove();
       return;
     }
 
     const target = findChannelHeaderTarget();
     if (!target) return;
 
-    let btn = existing;
     if (!btn) {
       btn = document.createElement('button');
       btn.className = 'bfy-channel-block-button';
       btn.type = 'button';
-      btn.addEventListener('click', async (e) => {
+      btn.addEventListener('click', async e => {
         e.preventDefault();
         e.stopPropagation();
-        const currentKey = getChannelPageKey();
-        if (!currentKey) return;
+        const key = getChannelPageKey();
+        if (!key) return;
         const label = getChannelPageLabel();
-        await setBlocked(currentKey, !isBlocked(currentKey), label);
-        updateChannelPageButton();
-        scan();
+        await setBlocked(key, !isBlocked(key, label), label);
+        queueScan();
       }, true);
     }
 
     if (btn.parentElement !== target) target.appendChild(btn);
-    const blocked = isBlocked(key);
-    btn.dataset.bfyKey = key;
+    const blocked = isBlocked(pageKey, getChannelPageLabel());
     btn.dataset.blocked = blocked ? 'true' : 'false';
     btn.textContent = blocked ? '차단 해제' : '채널 차단';
-    btn.title = blocked
-      ? '이 채널을 Blackout 목록에서 제거'
-      : '이 채널을 Blackout 목록에 추가';
+    btn.title = blocked ? 'Blackout 목록에서 이 채널 제거' : 'Blackout 목록에 이 채널 추가';
+  }
+
+  function clearStaleCardButtonsOnChannelPage() {
+    if (!getChannelPageKey()) return;
+    document.querySelectorAll('.bfy-block-button').forEach(btn => btn.remove());
   }
 
   function scan(root = document) {
-    if (!settings.enabled) {
-      document.querySelectorAll('.bfy-censored,.bfy-hidden').forEach(restore);
-    }
+    if (!settings.enabled) document.querySelectorAll('.bfy-censored,.bfy-hidden').forEach(restore);
 
-    for (const selector of CARD_SELECTORS) {
-      root.querySelectorAll?.(selector).forEach(processCard);
-      if (root.matches?.(selector)) processCard(root);
-    }
+    root.querySelectorAll?.(CARD_SELECTOR).forEach(processCard);
+    if (root.matches?.(CARD_SELECTOR)) processCard(root);
 
-    processHomeCards(root);
-    processChannelLinkFallbacks(root);
+    clearStaleCardButtonsOnChannelPage();
     updateChannelPageButton();
   }
 
   function queueScan() {
-    if (scheduled) return;
-    scheduled = true;
+    if (scanQueued) return;
+    scanQueued = true;
     requestAnimationFrame(() => {
-      scheduled = false;
+      scanQueued = false;
       scan();
     });
   }
 
-  async function loadSettings() {
-    const saved = await chrome.storage.local.get(DEFAULTS);
-    settings = { ...DEFAULTS, ...saved };
+  async function load() {
+    settings = { ...DEFAULTS, ...(await chrome.storage.local.get(DEFAULTS)) };
     scan();
   }
 
@@ -490,15 +378,8 @@
     queueScan();
   });
 
-  const observer = new MutationObserver(queueScan);
-  observer.observe(document.documentElement, { childList: true, subtree: true });
-
+  new MutationObserver(queueScan).observe(document.documentElement, { childList: true, subtree: true });
   window.addEventListener('yt-navigate-finish', queueScan, true);
-  window.addEventListener('yt-page-data-updated', queueScan, true);
   window.addEventListener('popstate', queueScan, true);
-  document.addEventListener('visibilitychange', () => {
-    if (!document.hidden) queueScan();
-  });
-
-  loadSettings();
+  load();
 })();
